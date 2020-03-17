@@ -134,7 +134,8 @@ def main(args):
 
         orig_emb = tf.placeholder(tf.float32,shape=[None,512],name='orig_emb_input')
         cos_loss = tf.reduce_sum(tf.multiply(embedding,orig_emb),axis=1)
-        grads2 = tf.gradients(cos_loss,image_input)
+        l2_loss = tf.norm(embedding-orig_emb, axis=1)
+        grads2 = tf.gradients(l2_loss,image_input)
 
         fdict2 = {keep_prob:1.0,is_train:False}
         
@@ -160,7 +161,7 @@ def main(args):
         step_val = 1./51.
         stage = 1
         step = 0
-        lr_thresh = 100
+        lr_thresh = 1000
         ls = []
         t = time()
         while True:
@@ -197,7 +198,7 @@ def main(args):
                                         step_val = 1./255.
                                         step = 0
                                         regr_coef = -1.
-                                        lr_thresh = 200
+                                        lr_thresh = 2000
                                         t = time()
                                 else:
                                         break
