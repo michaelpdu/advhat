@@ -5,6 +5,14 @@ from tqdm import tqdm
 import sys
 import argparse
 
+def is_image_file(file_path):
+    _, name = os.path.split(file_path)
+    if name.startswith('._'):
+        return False
+    _, ext = os.path.splitext(name)
+    ext = ext.lower()
+    return True if ext == '.jpg' or ext == '.png' else False
+
 def main(args):
 	
 	# Output dirs creation
@@ -15,10 +23,13 @@ def main(args):
 	label = 0
 	for path in sorted(os.listdir(args.input_dir)):
 		for name in sorted(os.listdir(os.path.join(args.input_dir,path))):
+			img_path = os.path.join(args.input_dir,path,name)
+			if not is_image_file(img_path):
+				continue
 			if args.mx:
-				images.append([[label],os.path.join(args.input_dir,path,name)])
+				images.append([[label],img_path])
 			else:
-				images.append(os.path.join(args.input_dir,path,name))
+				images.append(img_path)
 			labels.append(label)
 		label += 1
 	
