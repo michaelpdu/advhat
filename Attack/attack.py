@@ -9,9 +9,18 @@ from tqdm import tqdm
 from stn import spatial_transformer_network as stn
 from utils import TVloss, projector
 from sklearn.linear_model import LinearRegression as LR
-from time import time
+import time
 import datetime
 import matplotlib.pyplot as plt
+from tensorboardX import SummaryWriter
+
+def init_tensorboard(name=None):
+    # subprocess.Popen(['tensorboard', '--bind_all', '--logdir=logs', '--port=6007'])
+    time_str = time.strftime("%Y%m%d-%H%M%S")
+    if name is not None:
+        return SummaryWriter(f'logs/patch_{time_str}_{name}')
+    else:
+        return SummaryWriter(f'logs/patch_{time_str}')
 
 # Prepare image to network input format
 def prep(im):
@@ -22,8 +31,8 @@ def prep(im):
 
 def main(args):
         print(args)
+        summary_writer = init_tensorboard(args.log_name)
         now = str(datetime.datetime.now())
-        
         sess = tf.Session()
         
         # Off-plane sticker projection
@@ -161,9 +170,9 @@ def main(args):
         step_val = 1./51.
         stage = 1
         step = 0
-        lr_thresh = 1000
+        lr_thresh = args.iterations
         ls = []
-        t = time()
+        t = time.time()
         while True:
                 # Projecting sticker to the face and feeding it to the embedding model
                 fdict,ims = gener.gen_random(im0,init_logo)
@@ -185,7 +194,9 @@ def main(args):
                 # Logging
                 step += 1
                 if step%20==0:
-                        print('Stage:',stage,'Step:',step,'Av. time:',round((time()-t)/step,2),'Loss:',round(ls[-1],2),'Coef:',regr_coef)
+                        print('Stage:',stage,'Step:',step,'Av. time:',round((time.time()-t)/step,2),'Loss:',round(ls[-1],2),'Coef:',regr_coef)
+                        summary_writer.add_scalar('cos_loss', round(ls[-1],2), step)
+                        summary_writer.add_image('patch', np.asarray(im_val[0]).transpose((-1,0,1)), step)
 
                 # Switching to the second stage
                 if step>lr_thresh:
@@ -198,8 +209,8 @@ def main(args):
                                         step_val = 1./255.
                                         step = 0
                                         regr_coef = -1.
-                                        lr_thresh = 2000
-                                        t = time()
+                                        lr_thresh = 2*args.iterations
+                                        t = time.time()
                                 else:
                                         break
 
@@ -223,7 +234,8 @@ def parse_arguments(argv):
     parser.add_argument('--x', type=float, default=0., help='Translation of the sticker along x-axis')
     parser.add_argument('--y', type=float, default=-15., help='Translation of the sticker along y-axis')
     parser.add_argument('--batch_size', type=int, default=20, help='Batch size for attack')
-    
+    parser.add_argument('--iterations', type=int, default=2000, help='iterations for attack')
+    parser.add_argument('--log_name', type=str, default='', help='external log name')
     return parser.parse_args(argv)
 
 if __name__ == '__main__':
