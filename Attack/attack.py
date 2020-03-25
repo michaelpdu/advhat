@@ -32,9 +32,13 @@ def prep(im):
 def main(args):
         print(args)
         summary_writer = init_tensorboard(args.log_name)
-        now = str(datetime.datetime.now())
+        time_str = time.strftime("%Y%m%d-%H%M%S")
         sess = tf.Session()
         
+        logo_mask = None
+        if args.logo_mask:
+                logo_mask = np.where(io.imread(args.logo_mask)/255.< 0.5, 1., 0.)
+
         # Off-plane sticker projection
         logo = tf.placeholder(tf.float32,shape=[None,400,900,3],name='logo_input')
         param = tf.placeholder(tf.float32,shape=[None,1],name='param_input')
@@ -47,10 +51,10 @@ def main(args):
         theta = tf.placeholder(tf.float32,shape=[None,6],name='theta_input')
         prepared = stn(result,theta)
 		
-		# Transformation to ArcFace template
+	# Transformation to ArcFace template
         theta2 = tf.placeholder(tf.float32,shape=[None,6],name='theta2_input')
-        united = prepared[:,300:,150:750]*mask_input[:,300:,150:750]+\
-                                        face_input*(1-mask_input[:,300:,150:750])
+        #united = prepared[:,300:,150:750]*mask_input[:,300:,150:750]+face_input*(1-mask_input[:,300:,150:750])
+        united = tf.where(mask_input[:,300:,150:750]>0.5,prepared[:,300:,150:750],face_input)
         final_crop = tf.clip_by_value(stn(united,theta2,(112,112)),0.,1.)
         
         # TV loss and gradients
@@ -65,12 +69,15 @@ def main(args):
         class Imgen(object):
                 def __init__(self):
                         self.fdict = {ph:[[args.ph]],\
-                                                  logo:np.ones((1,400,900,3)),\
-                                                  param:[[args.param]],\
-                                                  theta:1./args.scale*np.array([[1.,0.,-args.x/450.,0.,1.,-args.y/450.]]),\
-                                                  theta2:[[1.,0.,0.,0.,1.,0.]],\
-                                                  w_tv:args.w_tv}
+                                logo:np.ones((1,400,900,3)),\
+                                param:[[args.param]],\
+                                theta:1./args.scale*np.array([[1.,0.,-args.x/450.,0.,1.,-args.y/450.]]),\
+                                theta2:[[1.,0.,0.,0.,1.,0.]],\
+                                w_tv:args.w_tv}
+                        if logo_mask is not None:
+                                self.fdict[logo]=np.expand_dims(logo_mask, axis=0)
                         mask = sess.run(prepared,feed_dict=self.fdict)
+                        io.imsave('fixed_img_mask.jpg', mask[0])
                         self.fdict[mask_input] = mask
                         
                 def gen_fixed(self,im,advhat):
@@ -89,12 +96,14 @@ def main(args):
                         angle = np.random.uniform(args.ph-2.,args.ph+2.,size=(batch,1))
                         parab = np.random.uniform(args.param-0.0002,args.param+0.0002,size=(batch,1))
                         fdict = {ph:angle,param:parab,w_tv:args.w_tv,\
-                                        theta:1./scale1*np.hstack([np.cos(alpha1),np.sin(alpha1),-x1/450.,\
-                                                                                           -np.sin(alpha1),np.cos(alpha1),-y1/450.]),\
-                                        theta2:scale2*np.hstack([np.cos(alpha2),np.sin(alpha2),np.zeros((batch,1)),\
-                                                                                        -np.sin(alpha2),np.cos(alpha2),y2]),\
-                                        logo:np.ones((batch,400,900,3)),\
-                                        face_input:np.tile(np.expand_dims(im,0),[batch,1,1,1])}
+                                theta:1./scale1*np.hstack([np.cos(alpha1),np.sin(alpha1),-x1/450.,\
+                                                                                        -np.sin(alpha1),np.cos(alpha1),-y1/450.]),\
+                                theta2:scale2*np.hstack([np.cos(alpha2),np.sin(alpha2),np.zeros((batch,1)),\
+                                                                                -np.sin(alpha2),np.cos(alpha2),y2]),\
+                                logo:np.ones((batch,400,900,3)),\
+                                face_input:np.tile(np.expand_dims(im,0),[batch,1,1,1])}
+                        if logo_mask is not None:
+                                fdict[logo]=np.tile(np.expand_dims(logo_mask,0),[batch,1,1,1])
                         mask = sess.run(prepared,feed_dict=fdict)
                         fdict[mask_input] = mask
                         fdict[logo] = np.tile(np.expand_dims(advhat,0),[batch,1,1,1])
@@ -103,13 +112,20 @@ def main(args):
         gener = Imgen()
 
         # Initialization of the sticker
-        init_logo = np.ones((400,900,3))*127./255.
+        if logo_mask is not None:
+                init_logo = logo_mask
+        else:
+                init_logo = np.ones((400,900,3))*127./255.
+
         if args.init_face!=None:
                 init_face = io.imread(args.init_face)/255.
                 init_loss = tv_loss+tf.reduce_sum(tf.abs(init_face-united[0]))
                 init_grads = tf.gradients(init_loss,logo)
-                init_logo = np.ones((400,900,3))*127./255.
-                fdict, _ = gener.gen_fixed(init_face,init_logo)
+                # init_logo = np.ones((400,900,3))*127./255.
+                fdict, img = gener.gen_fixed(init_face,init_logo)
+                print('save fixed_img.jpg...')
+                io.imsave('fixed_img.jpg', img[0])
+
                 moments = np.zeros((400,900,3))
                 print('Initialization from face, step 1/2')
                 for i in tqdm(range(500)):
@@ -123,7 +139,7 @@ def main(args):
                         grads = moments*0.9+sess.run(init_grads,feed_dict=fdict)[0][0]
                         moments = moments*0.9 + grads*0.1
                         init_logo = np.clip(init_logo-1./255.*np.sign(grads),0.,1.)
-                io.imsave(now+'_init_logo.png',init_logo)
+                io.imsave('init-logo-{}.png'.format(time_str),init_logo)
         elif args.init_logo!=None:
                 init_logo[:] = io.imread(args.init_logo)/255.
                 
@@ -132,10 +148,7 @@ def main(args):
         with tf.gfile.GFile(args.model, "rb") as f:
                 graph_def = tf.GraphDef()
                 graph_def.ParseFromString(f.read())
-        tf.import_graph_def(graph_def,
-                                          input_map=None,
-                                          return_elements=None,
-                                          name="")
+        tf.import_graph_def(graph_def,input_map=None,return_elements=None,name="")
         image_input = tf.get_default_graph().get_tensor_by_name('image_input:0')
         keep_prob = tf.get_default_graph().get_tensor_by_name('keep_prob:0')
         is_train = tf.get_default_graph().get_tensor_by_name('training_mode:0')
@@ -179,7 +192,7 @@ def main(args):
                 fdict2[image_input] = prep(ims)
                 grad_tmp = sess.run(grads2,feed_dict=fdict2)
                 
-                fdict_val, im_val = gener.gen_fixed(im0,init_logo)
+                _, im_val = gener.gen_fixed(im0,init_logo)
                 fdict2[image_input] = prep(im_val)
                 ls.append(sess.run(cos_loss,feed_dict=fdict2)[0])
                 
@@ -198,26 +211,44 @@ def main(args):
                         summary_writer.add_scalar('cos_loss', round(ls[-1],2), step)
                         summary_writer.add_image('patch', np.asarray(im_val[0]).transpose((-1,0,1)), step)
 
-                # Switching to the second stage
+                if step%100==0:
+                        # save intermediate patch
+                        new_img = np.where(logo_mask<0.5, 1.0, init_logo)
+                        io.imsave('advhat-{}.png'.format(time_str), new_img)
+
                 if step>lr_thresh:
-                        regr.fit(np.expand_dims(np.arange(100),1),np.hstack(ls[-100:]))
-                        regr_coef = regr.coef_[0]
-                        if regr_coef>=0:
-                                if stage==1:
-                                        stage = 2
-                                        moment_val = 0.995
-                                        step_val = 1./255.
-                                        step = 0
-                                        regr_coef = -1.
-                                        lr_thresh = 2*args.iterations
-                                        t = time.time()
-                                else:
-                                        break
+                        break
+
+                # # Switching to the second stage
+                # if step>lr_thresh:
+                #         regr.fit(np.expand_dims(np.arange(100),1),np.hstack(ls[-100:]))
+                #         regr_coef = regr.coef_[0]
+                #         if regr_coef>=0:
+                #                 if stage==1:
+                #                         stage = 2
+                #                         moment_val = 0.995
+                #                         step_val = 1./255.
+                #                         # step = 0
+                #                         regr_coef = -1.
+                #                         lr_thresh = 2*args.iterations
+                #                         t = time.time()
+                #                 else:
+                #                         break
 
         plt.plot(range(len(ls)),ls)
-        plt.savefig(now+'_cosine.png')
-        io.imsave(now+'_advhat.png',init_logo)
-                   
+        plt.savefig('cosine-{}.png'.format(time_str))
+        new_img = np.where(logo_mask<0.5, 1.0, init_logo)
+        io.imsave('advhat-{}.png'.format(time_str), new_img)
+
+"""
+
+CUDA_VISIBLE_DEVICES=0 python attack.py /data1/aliyun_code/facegen/images/base/xingchi/xingchi_mask2_aligned_600.png /data1/models/insightface_tf/r100.pb --anchor_face=/data1/aliyun_code/facegen/images/base/aligned/beilan_glasses_aligned.png --init_logo=./beilan_mouth_900_400.jpg --ph=-5 --scale=0.5 --y=350 --iterations=5000 --batch_size=10 --log_name=xingchi2beilan_mouth
+
+CUDA_VISIBLE_DEVICES=1 python attack.py /data1/aliyun_code/facegen/images/base/xingchi/xingchi_mask2_aligned_600.png /data1/models/insightface_tf/r100.pb --anchor_face=/data1/aliyun_code/facegen/images/base/aligned/beilan_glasses_aligned.png --init_logo=./beilan_eyes_900_400.jpg --scale=0.5 --y=120 --ph=5 --iterations=5000 --batch_size=10 --log_name=xingchi2beilan_eyes
+
+CUDA_VISIBLE_DEVICES=1 python attack.py /data1/aliyun_code/facegen/images/base/dupei/xingchi_mask2_aligned_600.png /data1/models/insightface_tf/r100.pb --anchor_face=/data1/aliyun_code/facegen/images/base/aligned/beilan_glasses_aligned.png --init_logo=./beilan_mouth_900_400.jpg --ph=-5 --scale=0.5 --y=350 --iterations=5000 --batch_size=10 --log_name=dupei2beilan_mouth
+"""
+
 def parse_arguments(argv):
     parser = argparse.ArgumentParser()
     
@@ -225,6 +256,7 @@ def parse_arguments(argv):
     parser.add_argument('model', type=str, help='Path to the model for attack.')
     parser.add_argument('--init_face', type=str, default=None, help='Path to the face for sticker inititalization.')
     parser.add_argument('--init_logo', type=str, default=None, help='Path to the image for inititalization.')
+    parser.add_argument('--logo_mask', type=str, default=None, help='Path to the image for inititalization.')
     parser.add_argument('--anchor_face', type=str, default=None, help='Path to the anchor face.')
     parser.add_argument('--anchor_emb', type=str, default=None, help='Path to the anchor emb (the last will be used)')
     parser.add_argument('--w_tv', type=float, default=1e-4, help='Weight of the TV loss')
